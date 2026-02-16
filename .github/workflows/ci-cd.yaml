@@ -1,0 +1,156 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'java-api/**'
+      - 'node-frontend/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'java-api/**'
+      - 'node-frontend/**'
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: eks-microservices
+
+jobs:
+  java-api-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+          path: java-api
+
+      - name: Build Java API
+        working-directory: ./java-api
+        run: mvn clean package -DskipTests
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        working-directory: ./java-api
+        run: |
+          docker build -t $ECR_REGISTRY/java-api:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/java-api:$IMAGE_TAG $ECR_REGISTRY/java-api:latest
+          docker push $ECR_REGISTRY/java-api:$IMAGE_TAG
+          docker push $ECR_REGISTRY/java-api:latest
+
+  node-frontend-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: node-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./node-frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ./node-frontend
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        working-directory: ./node-frontend
+        run: |
+          docker build -t $ECR_REGISTRY/node-frontend:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/node-frontend:$IMAGE_TAG $ECR_REGISTRY/node-frontend:latest
+          docker push $ECR_REGISTRY/node-frontend:$IMAGE_TAG
+          docker push $ECR_REGISTRY/node-frontend:latest
+
+  deploy-to-eks:
+    needs: [java-api-build, node-frontend-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to Kubernetes
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Update image tags in Kubernetes manifests
+          sed -i "s|YOUR_AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/java-api:latest|$ECR_REGISTRY/java-api:${IMAGE_TAG}|g" k8s/java-api/deployment.yaml
+          sed -i "s|YOUR_AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/node-frontend:latest|$ECR_REGISTRY/node-frontend:${IMAGE_TAG}|g" k8s/node-frontend/deployment.yaml
+          
+          # Apply Kubernetes manifests
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/secrets.yaml
+          kubectl apply -f k8s/java-api/deployment.yaml
+          kubectl apply -f k8s/node-frontend/deployment.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/java-api -n microservices
+          kubectl rollout status deployment/node-frontend -n microservices
+          kubectl get pods -n microservices

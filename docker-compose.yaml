@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: productsdb
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  java-api:
+    build:
+      context: ./java-api
+      dockerfile: Dockerfile
+    container_name: java-api
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:mysql://mysql-db:3306/productsdb?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      DB_USERNAME: root
+      DB_PASSWORD: rootpassword
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  node-frontend:
+    build:
+      context: ./node-frontend
+      dockerfile: Dockerfile
+    container_name: node-frontend
+    ports:
+      - "3000:80"
+    environment:
+      VITE_API_URL: http://java-api:8080/api
+    depends_on:
+      - java-api
+
+volumes:
+  mysql_data:
