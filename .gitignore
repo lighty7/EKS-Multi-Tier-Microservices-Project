@@ -1,0 +1,48 @@
+# Build outputs
+target/
+dist/
+build/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Java
+java-api/target/
+
+# Node
+node-frontend/node_modules/
+node-frontend/dist/
+
+# Misc
+*.bak
+*.tmp
+*.swp
+*~
+
+# Secrets
+*.pem
+*.key
+credentials.json
